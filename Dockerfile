@@ -21,6 +21,9 @@ RUN npm install --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/public ./public
 
+# Ensure data directory exists with appropriate permissions for SQLite persistence
+RUN mkdir -p /app/data
+
 EXPOSE 8000
 
 CMD ["node", "dist/server.js"]

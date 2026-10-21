@@ -911,10 +911,20 @@
         if (m.isQuarantined || m.trustScore < 0.35) color = 'var(--rose-accent)';
         else if (m.trustScore < 0.70) color = '#f59e0b';
 
+        const fixtureBadge = m.isTestFixture 
+          ? `<span style="font-size:0.65rem; font-weight:700; background:#fef3c7; color:#92400e; padding:0.15rem 0.55rem; border-radius:999px; border:1px solid #fde68a;">BENCHMARK FIXTURE</span>`
+          : '';
+
+        const statusBadge = `<span class="pill-category" style="${m.verificationStatus === 'verified' ? '' : 'background: #f1f5f9; color: #475569;'}">${(m.verificationStatus || 'unverified').toUpperCase()}</span>`;
+
         return `
           <div class="glass-memory-card ${m.isQuarantined ? 'quarantined-state' : ''}">
             <div class="card-meta-header">
-              <span class="pill-category">${m.category}</span>
+              <div style="display:flex; align-items:center; gap:0.4rem;">
+                <span class="pill-category">${m.category}</span>
+                ${statusBadge}
+                ${fixtureBadge}
+              </div>
               ${m.isQuarantined ? '<span class="tag-quarantine-active">QUARANTINED (THEOREM 1)</span>' : '<span style="font-family: \'Geist Mono\', monospace; font-size: 0.7rem; color: var(--text-light);">' + m.id + '</span>'}
             </div>
             <div class="memory-heading">${m.task}</div>
@@ -968,11 +978,16 @@
 
     async function recordFeedback(memoryId, outcome) {
       try {
-        await fetch('/api/feedback', {
+        const eventId = 'fb_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+        const res = await fetch('/api/feedback', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ memoryId, outcome, reason: 'Feedback submitted from registry control' })
+          body: JSON.stringify({ memoryId, outcome, reason: 'Feedback submitted from dashboard control', eventId })
         });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Feedback error: ' + (data.error || 'Request failed'));
+        }
         await loadTelemetry();
       } catch (err) {
         alert('Feedback error: ' + err.message);
@@ -980,8 +995,16 @@
     }
 
     async function resetMemoryBank() {
-      await fetch('/api/reset', { method: 'POST' });
-      await loadTelemetry();
+      try {
+        const res = await fetch('/api/reset', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          alert('Reset notice: ' + (data.error || 'Reset unavailable in production mode'));
+        }
+        await loadTelemetry();
+      } catch (err) {
+        alert('Reset error: ' + err.message);
+      }
     }
 
     function sendPrompt(text) {

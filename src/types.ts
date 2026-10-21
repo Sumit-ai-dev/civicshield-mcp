@@ -1,9 +1,15 @@
 /**
  * CivicShield & AEMA Type Definitions
- * Inspired by AEMA, MemPalace, and REA architectures
+ *
+ * Distinguishes:
+ * - Unverified (provisional submissions from clients or untrusted sources)
+ * - Verified (officially reviewed or verified community records)
+ * - Quarantined (isolated records whose trust fell strictly below quarantine cutoff)
  */
 
 export type MemoryCategory = 'civic' | 'health' | 'disaster' | 'welfare';
+
+export type VerificationStatus = 'unverified' | 'verified' | 'quarantined';
 
 export interface CommunityMemory {
   id: string;
@@ -12,10 +18,17 @@ export interface CommunityMemory {
   solution: string;
   trustScore: number;
   isQuarantined: boolean;
+  verificationStatus: VerificationStatus;
   failureCount: number;
   successCount: number;
   location: string;
-  authority: string;
+  claimedAuthority: string;
+  verifiedAuthority?: string;
+  authority: string; // for backward compatibility in UI / MCP
+  isTestFixture?: boolean; // explicitly marks intentionally fabricated test fixtures
+  quarantinedAt?: string;
+  quarantineReason?: string;
+  lastVerifiedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -26,18 +39,24 @@ export type WALEventType =
   | 'FEEDBACK_SUCCESS'
   | 'FEEDBACK_FAILURE'
   | 'QUARANTINE_TRIGGERED'
-  | 'DEDUPLICATION';
+  | 'FEEDBACK_DUPLICATE_IGNORED'
+  | 'RESET';
 
 export interface WALEntry {
   id: string;
   timestamp: string;
   eventType: WALEventType;
   memoryId: string;
+  eventId?: string; // Client idempotency key
   previousTrust?: number;
   newTrust?: number;
   outcome?: 'success' | 'failure';
   reason?: string;
   quarantined: boolean;
+  provenance?: {
+    source?: string;
+    authority?: string;
+  };
 }
 
 export interface RetrievalResult {
@@ -47,10 +66,12 @@ export interface RetrievalResult {
 }
 
 export interface FeedbackResult {
+  eventId: string;
   memoryId: string;
   previousScore: number;
   newScore: number;
   isQuarantined: boolean;
+  isDuplicate: boolean;
   message: string;
 }
 

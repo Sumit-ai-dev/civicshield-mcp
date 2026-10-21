@@ -1,29 +1,76 @@
 /**
  * Community Memory Bank & Immune Store
- * Implements reliable retrieval, A-EMA trust updates, and Theorem 1 Quarantine
+ *
+ * Implements:
+ * - Durable SQLite recovery & atomic state transactions
+ * - Safe memory ingestion (provisional unverified status & capped initial trust)
+ * - Deterministic, idempotent feedback updates with audit trail
+ * - Strict dual-condition quarantine filtering for zero negative transfer
  */
 
-import { CommunityMemory, RetrievalResult, FeedbackResult, SystemAuditReport, MemoryCategory } from './types.js';
-import { updateTrustScore, isQuarantineTriggered, DEFAULT_QUARANTINE_THRESHOLD } from './trust.js';
+import {
+  CommunityMemory,
+  RetrievalResult,
+  FeedbackResult,
+  SystemAuditReport,
+  MemoryCategory,
+  VerificationStatus,
+} from './types.js';
+import {
+  updateTrustScore,
+  isQuarantineTriggered,
+  validateTrustScore,
+  DEFAULT_QUARANTINE_THRESHOLD,
+} from './trust.js';
 import { wal } from './wal.js';
+import { storage } from './storage.js';
 import { SEED_COMMUNITY_MEMORIES } from './data/seedProtocols.js';
+
+const MAX_TASK_LENGTH = 500;
+const MAX_SOLUTION_LENGTH = 1500;
+const MAX_UNVERIFIED_INITIAL_TRUST = 0.60;
+const DEFAULT_UNVERIFIED_INITIAL_TRUST = 0.50;
 
 export class CommunityMemoryStore {
   private memories: Map<string, CommunityMemory> = new Map();
 
   constructor() {
-    this.resetToDefaults();
+    this.init();
+  }
+
+  private init(): void {
+    if (storage.hasMemories()) {
+      // Recover existing persisted state
+      const loaded = storage.getAllMemories();
+      for (const mem of loaded) {
+        // Enforce policy consistency on load: if trust is below cutoff, ensure quarantine flag is set
+        if (isQuarantineTriggered(mem.trustScore)) {
+          mem.isQuarantined = true;
+          mem.verificationStatus = 'quarantined';
+        }
+        this.memories.set(mem.id, mem);
+      }
+      console.log(`[INFO] Restored ${this.memories.size} memories from durable storage.`);
+    } else {
+      // First boot: populate seed protocols
+      this.resetToDefaults();
+    }
   }
 
   public resetToDefaults(): void {
     this.memories.clear();
+    storage.clearAll();
+
     for (const mem of SEED_COMMUNITY_MEMORIES) {
-      this.memories.set(mem.id, { ...mem });
+      const copy = { ...mem };
+      this.memories.set(copy.id, copy);
+      storage.saveMemory(copy);
     }
+
     wal.log({
-      eventType: 'STORE',
+      eventType: 'RESET',
       memoryId: 'system_init',
-      reason: 'Initialized CivicShield Community Memory Bank with verified protocols',
+      reason: 'Initialized CivicShield Community Memory Bank with verified seed protocols',
       quarantined: false,
     });
   }
@@ -37,64 +84,79 @@ export class CommunityMemoryStore {
   }
 
   /**
-   * Safe Retrieval: Filters out quarantined memories and low-trust scores
+   * Safe Retrieval:
+   * Guarantees that quarantined and low-trust memories are strictly excluded.
+   * Both `isQuarantined` flag and `trustScore < minTrust` are enforced.
    */
   public retrieve(
     query: string,
     minTrust: number = DEFAULT_QUARANTINE_THRESHOLD,
-    category?: MemoryCategory
+    category?: MemoryCategory,
+    locationFilter?: string
   ): RetrievalResult[] {
-    const q = query.toLowerCase();
-    const queryTokens = q.split(/\s+/).filter(t => t.length > 2);
+    validateTrustScore(minTrust);
+
+    const safeQuery = typeof query === 'string' ? query.trim().toLowerCase() : '';
+    const queryTokens = safeQuery
+      .split(/[^a-z0-9]+/i)
+      .filter(t => t.length > 2);
 
     const candidates: RetrievalResult[] = [];
 
     for (const mem of this.memories.values()) {
-      // 1. STRIKE 1 FILTER: Theorem 1 Quarantine Enforcement
-      if (mem.isQuarantined) {
-        continue; // Strictly omitted to prevent negative transfer!
+      // 1. MANDATORY SAFETY FILTER: Quarantine Exclusion
+      if (mem.isQuarantined || isQuarantineTriggered(mem.trustScore, DEFAULT_QUARANTINE_THRESHOLD)) {
+        continue;
       }
 
-      // 2. STRIKE 2 FILTER: Trust Cutoff
+      // 2. MINIMUM TRUST THRESHOLD FILTER
       if (mem.trustScore < minTrust) {
         continue;
       }
 
-      // Category match
+      // 3. CATEGORY FILTER (if requested)
       if (category && mem.category !== category) {
         continue;
       }
 
-      // Semantic / token overlap scoring
-      const taskTokens = (mem.task + ' ' + mem.solution + ' ' + mem.location).toLowerCase();
+      // 4. LOCATION FILTER (if requested)
+      if (locationFilter && locationFilter.trim()) {
+        const locNeedle = locationFilter.trim().toLowerCase();
+        if (!mem.location.toLowerCase().includes(locNeedle)) {
+          continue;
+        }
+      }
+
+      // 5. LEXICAL OVERLAP MATCHING
+      const searchableText = `${mem.task} ${mem.solution} ${mem.location} ${mem.claimedAuthority}`.toLowerCase();
       let matchCount = 0;
       for (const token of queryTokens) {
-        if (taskTokens.includes(token)) {
+        if (searchableText.includes(token)) {
           matchCount++;
         }
       }
 
-      // If at least one matching concept or general relevance
+      // Include if there are matching tokens or if query is open/empty
       if (matchCount > 0 || queryTokens.length === 0) {
-        const relevance = queryTokens.length > 0 ? matchCount / queryTokens.length : 0.5;
-        // Effective score combines semantic relevance with historical trust
-        const effectiveScore = parseFloat((0.4 * relevance + 0.6 * mem.trustScore).toFixed(4));
+        const lexicalRelevance = queryTokens.length > 0 ? matchCount / queryTokens.length : 0.5;
+        // Deterministic composite rank: 40% lexical relevance, 60% historical trust score
+        const effectiveScore = parseFloat((0.4 * lexicalRelevance + 0.6 * mem.trustScore).toFixed(4));
 
         candidates.push({
           memory: mem,
           effectiveScore,
-          isReliable: mem.trustScore >= 0.70,
+          isReliable: mem.trustScore >= 0.70 && mem.verificationStatus === 'verified',
         });
       }
     }
 
-    // Sort by effective rank descending
+    // Sort descending by effective score
     candidates.sort((a, b) => b.effectiveScore - a.effectiveScore);
 
     wal.log({
       eventType: 'RETRIEVE',
       memoryId: candidates.length > 0 ? candidates[0].memory.id : 'none',
-      reason: `Query "${query}" matched ${candidates.length} reliable memories (quarantined records excluded)`,
+      reason: `Query "${safeQuery.slice(0, 50)}" returned ${candidates.length} candidate memories (quarantined records strictly excluded)`,
       quarantined: false,
     });
 
@@ -102,62 +164,130 @@ export class CommunityMemoryStore {
   }
 
   /**
-   * Store new community experience with initial trust and WAL log
+   * Secure Memory Ingestion Policy:
+   * Newly submitted memories from clients are always treated as unverified/provisional.
+   * Client-supplied initial trust is capped to MAX_UNVERIFIED_INITIAL_TRUST (0.60).
    */
   public store(
     task: string,
     solution: string,
     category: MemoryCategory = 'civic',
     location: string = 'Bengaluru',
-    authority: string = 'Community Contributor',
-    initialTrust: number = 0.85
+    claimedAuthority: string = 'Community Contributor',
+    initialTrust?: number
   ): CommunityMemory {
-    const id = `exp_${category}_${Date.now().toString().slice(-5)}`;
+    if (typeof task !== 'string' || task.trim().length < 5) {
+      throw new Error(`Task must be a string with at least 5 characters.`);
+    }
+    if (typeof solution !== 'string' || solution.trim().length < 5) {
+      throw new Error(`Solution must be a string with at least 5 characters.`);
+    }
+    if (task.length > MAX_TASK_LENGTH) {
+      throw new Error(`Task exceeds maximum length of ${MAX_TASK_LENGTH} characters.`);
+    }
+    if (solution.length > MAX_SOLUTION_LENGTH) {
+      throw new Error(`Solution exceeds maximum length of ${MAX_SOLUTION_LENGTH} characters.`);
+    }
+
+    const validCategories: MemoryCategory[] = ['civic', 'health', 'disaster', 'welfare'];
+    if (!validCategories.includes(category)) {
+      throw new Error(`Invalid category "${category}". Must be one of: ${validCategories.join(', ')}`);
+    }
+
+    // Enforce unverified provisional status and capped initial trust
+    let trust = initialTrust !== undefined ? initialTrust : DEFAULT_UNVERIFIED_INITIAL_TRUST;
+    validateTrustScore(trust);
+    // Never allow an unverified client submission to start above the provisional cap
+    if (trust > MAX_UNVERIFIED_INITIAL_TRUST) {
+      trust = MAX_UNVERIFIED_INITIAL_TRUST;
+    }
+
+    const cleanTask = task.trim();
+    const cleanSolution = solution.trim();
+    const cleanLocation = (location || 'Bengaluru').trim().slice(0, 150);
+    const cleanAuthority = (claimedAuthority || 'Unverified Community Contributor').trim().slice(0, 150);
+
+    const id = `exp_${category}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+    const now = new Date().toISOString();
+
     const newMemory: CommunityMemory = {
       id,
       category,
-      task,
-      solution,
-      trustScore: initialTrust,
-      isQuarantined: false,
+      task: cleanTask,
+      solution: cleanSolution,
+      trustScore: trust,
+      isQuarantined: isQuarantineTriggered(trust),
+      verificationStatus: isQuarantineTriggered(trust) ? 'quarantined' : 'unverified',
       failureCount: 0,
       successCount: 1,
-      location,
-      authority,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      location: cleanLocation,
+      claimedAuthority: cleanAuthority,
+      authority: cleanAuthority,
+      isTestFixture: false,
+      createdAt: now,
+      updatedAt: now,
     };
 
     this.memories.set(id, newMemory);
+    storage.saveMemory(newMemory);
 
     wal.log({
       eventType: 'STORE',
       memoryId: id,
-      newTrust: initialTrust,
-      reason: `Registered new community memory for: "${task}"`,
-      quarantined: false,
+      newTrust: trust,
+      reason: `Ingested provisional community memory for: "${cleanTask.slice(0, 40)}"`,
+      quarantined: newMemory.isQuarantined,
+      provenance: { authority: cleanAuthority, source: cleanLocation },
     });
 
     return newMemory;
   }
 
   /**
-   * Record outcome feedback: Asymmetric EMA Trust Update & Theorem 1 Quarantine
+   * Record Feedback with Idempotency & Theorem 1 Quarantine Enforcement.
+   * If the same eventId is retried, the previously recorded state is returned without double-penalizing.
    */
   public recordFeedback(
     memoryId: string,
     outcome: 'success' | 'failure',
-    reason?: string
+    reason?: string,
+    eventId?: string
   ): FeedbackResult {
     const memory = this.memories.get(memoryId);
     if (!memory) {
       throw new Error(`Memory with ID "${memoryId}" does not exist.`);
     }
 
+    const safeEventId = eventId || `fb_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+    // Check idempotency in storage
+    const prior = storage.isFeedbackEventApplied(safeEventId);
+    if (prior) {
+      wal.log({
+        eventType: 'FEEDBACK_DUPLICATE_IGNORED',
+        memoryId,
+        eventId: safeEventId,
+        reason: `Duplicate feedback event ID "${safeEventId}" ignored for idempotency`,
+        quarantined: memory.isQuarantined,
+      });
+
+      return {
+        eventId: safeEventId,
+        memoryId,
+        previousScore: prior.previous_score,
+        newScore: prior.new_score,
+        isQuarantined: memory.isQuarantined,
+        isDuplicate: true,
+        message: `Duplicate feedback event "${safeEventId}" was already processed. No re-application performed.`,
+      };
+    }
+
     const previousScore = memory.trustScore;
     const newScore = updateTrustScore(previousScore, outcome);
+    const now = new Date().toISOString();
+
     memory.trustScore = newScore;
-    memory.updatedAt = new Date().toISOString();
+    memory.updatedAt = now;
 
     if (outcome === 'success') {
       memory.successCount++;
@@ -165,42 +295,59 @@ export class CommunityMemoryStore {
       memory.failureCount++;
     }
 
-    // Check Theorem 1 Quarantine Bound
-    const triggered = isQuarantineTriggered(newScore);
+    // Check Theorem 1 Quarantine Bound (strictly < 0.35)
+    const triggered = isQuarantineTriggered(newScore, DEFAULT_QUARANTINE_THRESHOLD);
     let message = '';
 
     if (triggered) {
       memory.isQuarantined = true;
-      message = `🚨 [THEOREM 1 QUARANTINE TRIGGERED] Trust dropped to ${(newScore * 100).toFixed(1)}% (below ${DEFAULT_QUARANTINE_THRESHOLD * 100}% threshold). Memory is permanently quarantined to prevent negative transfer to community members.`;
-      
-      wal.log({
-        eventType: 'QUARANTINE_TRIGGERED',
-        memoryId,
-        previousTrust: previousScore,
-        newTrust: newScore,
-        outcome,
-        reason: reason || 'Trust score decayed below Theorem 1 safety threshold',
-        quarantined: true,
-      });
-    } else {
-      message = `Updated trust score for [${memoryId}]: ${(previousScore * 100).toFixed(1)}% -> ${(newScore * 100).toFixed(1)}%. Status: ACTIVE.`;
+      memory.verificationStatus = 'quarantined';
+      memory.quarantinedAt = now;
+      memory.quarantineReason = reason || 'Trust score decayed strictly below Theorem 1 quarantine threshold (0.35)';
 
-      wal.log({
-        eventType: outcome === 'success' ? 'FEEDBACK_SUCCESS' : 'FEEDBACK_FAILURE',
-        memoryId,
-        previousTrust: previousScore,
-        newTrust: newScore,
-        outcome,
-        reason: reason || `Execution outcome: ${outcome}`,
-        quarantined: false,
-      });
+      message = `[THEOREM 1 QUARANTINE ACTIVATED] Trust score dropped to ${(newScore * 100).toFixed(1)}% (below ${DEFAULT_QUARANTINE_THRESHOLD * 100}% threshold). Memory is isolated and omitted from standard retrieval.`;
+    } else {
+      message = `Updated trust score for [${memoryId}]: ${(previousScore * 100).toFixed(1)}% -> ${(newScore * 100).toFixed(1)}%. Status: ${memory.verificationStatus.toUpperCase()}.`;
     }
 
+    const walEntry = {
+      id: `wal_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      timestamp: now,
+      eventType: triggered
+        ? ('QUARANTINE_TRIGGERED' as const)
+        : outcome === 'success'
+        ? ('FEEDBACK_SUCCESS' as const)
+        : ('FEEDBACK_FAILURE' as const),
+      memoryId,
+      eventId: safeEventId,
+      previousTrust: previousScore,
+      newTrust: newScore,
+      outcome,
+      reason: reason || (triggered ? memory.quarantineReason : `Execution outcome: ${outcome}`),
+      quarantined: memory.isQuarantined,
+      provenance: {
+        authority: memory.authority,
+        source: memory.location,
+      },
+    };
+
+    // Atomic transaction across memory table, WAL table, and idempotency table
+    storage.recordFeedbackTransaction(safeEventId, memory, walEntry, {
+      eventId: safeEventId,
+      memoryId,
+      outcome,
+      previousScore,
+      newScore,
+      appliedAt: now,
+    });
+
     return {
+      eventId: safeEventId,
       memoryId,
       previousScore,
       newScore,
       isQuarantined: memory.isQuarantined,
+      isDuplicate: false,
       message,
     };
   }
@@ -219,8 +366,7 @@ export class CommunityMemoryStore {
       ? all.reduce((acc, m) => acc + m.trustScore, 0) / totalMemories
       : 0;
 
-    // Negative Transfer Risk Score:
-    // Measures unquarantined memories that have low trust (< 0.50)
+    // Vulnerable memories: active memories approaching cutoff (< 0.50)
     const vulnerableUnquarantined = all.filter(m => !m.isQuarantined && m.trustScore < 0.50).length;
     const negativeTransferRiskScore = totalMemories > 0 ? vulnerableUnquarantined / totalMemories : 0;
 
@@ -233,12 +379,12 @@ export class CommunityMemoryStore {
 
     const recommendations: string[] = [];
     if (quarantinedCount > 0) {
-      recommendations.push(`${quarantinedCount} toxic or failed memory traces isolated under Theorem 1 bounds.`);
+      recommendations.push(`${quarantinedCount} memory record(s) isolated under Theorem 1 bounds.`);
     }
     if (vulnerableUnquarantined > 0) {
-      recommendations.push(`Monitor ${vulnerableUnquarantined} borderline memories approaching the 35% quarantine cutoff.`);
+      recommendations.push(`Monitor ${vulnerableUnquarantined} borderline memory record(s) with trust below 50%.`);
     } else {
-      recommendations.push('Zero vulnerable memories active. Community AI immune system is fully shielded.');
+      recommendations.push('Zero active vulnerable memories below 50% trust.');
     }
 
     return {

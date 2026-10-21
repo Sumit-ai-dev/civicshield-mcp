@@ -1,10 +1,16 @@
 /**
  * CivicShield Production HTTP / SSE Server
  * Deployed to SpringWinter AWS Cloud Platform
- * Exposes MCP over Server-Sent Events (SSE) + Live Visual Demo Dashboard
+ *
+ * Implements:
+ * - Multi-client session-aware MCP SSE transport management
+ * - Protected reset endpoint with token authorization
+ * - Proportionate rate limiting and payload size enforcement
+ * - Groq LLM integration with deterministic fallback
+ * - Cloud health check endpoint for AWS load balancers
  */
 
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
@@ -39,35 +45,75 @@ if (fs.existsSync(envFilePath)) {
 const app = express();
 const PORT = parseInt(process.env.PORT || '8000', 10);
 
-app.use(cors());
-app.use(express.json());
+// Restrict CORS if configured, or default safely
+const corsOrigin = process.env.CORS_ORIGIN || '*';
+app.use(cors({ origin: corsOrigin }));
+
+// Strict body limit to prevent memory exhaustion
+app.use(express.json({ limit: '64kb' }));
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Active MCP SSE transport
-let sseTransport: SSEServerTransport | null = null;
+// Simple in-memory rate limiter for mutation routes
+const ipRateLimits = new Map<string, { count: number; resetAt: number }>();
+function mutationRateLimit(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
+  const now = Date.now();
+  const record = ipRateLimits.get(ip);
 
-// 1. MCP Server-Sent Events (SSE) Endpoint (for Claude Desktop / Cursor / SpringWinter)
+  if (!record || now > record.resetAt) {
+    ipRateLimits.set(ip, { count: 1, resetAt: now + 60000 });
+    return next();
+  }
+
+  if (record.count >= 60) {
+    return res.status(429).json({ error: 'Too many requests. Please wait a minute.' });
+  }
+
+  record.count++;
+  next();
+}
+
+// Multi-Client Session-Aware MCP Transports Map
+const sseTransports = new Map<string, SSEServerTransport>();
+
+// 1. MCP Server-Sent Events (SSE) Endpoint (Multi-Client Session Aware)
 app.get('/sse', async (req: Request, res: Response) => {
-  console.log('[MCP SSE] Client connected to /sse');
-  sseTransport = new SSEServerTransport('/messages', res);
-  await mcpServer.connect(sseTransport);
+  const transport = new SSEServerTransport('/messages', res);
+  const sessionId = transport.sessionId;
+  sseTransports.set(sessionId, transport);
+
+  console.log(`[MCP SSE] Client session established: ${sessionId} (Active: ${sseTransports.size})`);
 
   req.on('close', () => {
-    console.log('[MCP SSE] Client connection closed');
-    sseTransport = null;
+    console.log(`[MCP SSE] Client session closed: ${sessionId}`);
+    sseTransports.delete(sessionId);
   });
+
+  await mcpServer.connect(transport);
 });
 
-// 2. MCP POST Messages Endpoint
+// 2. MCP POST Messages Endpoint (Session-Routed)
 app.post('/messages', async (req: Request, res: Response) => {
-  if (sseTransport) {
-    await sseTransport.handlePostMessage(req, res);
+  const sessionId = req.query.sessionId as string;
+
+  if (sessionId) {
+    const transport = sseTransports.get(sessionId);
+    if (!transport) {
+      return res.status(404).json({ error: `MCP session "${sessionId}" not found or already closed.` });
+    }
+    await transport.handlePostMessage(req, res);
+  } else if (sseTransports.size === 1) {
+    // Graceful fallback for single-client environments without query param
+    const [singleTransport] = sseTransports.values();
+    await singleTransport.handlePostMessage(req, res);
+  } else if (sseTransports.size === 0) {
+    res.status(400).json({ error: 'No active SSE sessions. Connect to /sse first.' });
   } else {
-    res.status(400).json({ error: 'SSE session not established. Connect to /sse first.' });
+    res.status(400).json({ error: 'Multiple active sessions. Must provide ?sessionId=<id> query parameter.' });
   }
 });
 
-// 3. Cloud Load Balancer Health Check (SpringWinter requirement)
+// 3. Cloud Load Balancer Health Check (SpringWinter AWS Requirement)
 app.get('/health', (req: Request, res: Response) => {
   const audit = memoryStore.audit();
   res.status(200).json({
@@ -75,6 +121,7 @@ app.get('/health', (req: Request, res: Response) => {
     platform: 'SpringWinter Cloud Platform',
     service: 'CivicShield-MCP',
     uptimeSeconds: Math.floor(process.uptime()),
+    activeSessions: sseTransports.size,
     activeMemories: audit.activeCount,
     quarantinedCount: audit.quarantinedCount,
     negativeTransferRisk: `${(audit.negativeTransferRiskScore * 100).toFixed(1)}%`,
@@ -88,42 +135,70 @@ app.get('/api/memories', (req: Request, res: Response) => {
 });
 
 app.get('/api/wal', (req: Request, res: Response) => {
-  res.json(wal.getRecent(15));
+  const limit = parseInt(req.query.limit as string || '20', 10);
+  res.json(wal.getRecent(Math.min(100, Math.max(1, limit))));
 });
 
 app.get('/api/audit', (req: Request, res: Response) => {
   res.json(memoryStore.audit());
 });
 
-// Trigger feedback from the Demo UI (e.g. click "Report Poison / Failure")
-app.post('/api/feedback', (req: Request, res: Response) => {
-  const { memoryId, outcome, reason } = req.body;
-  if (!memoryId || !outcome) {
-    return res.status(400).json({ error: 'memoryId and outcome are required' });
+// Trigger feedback from UI / client (protected against spam & invalid bodies)
+app.post('/api/feedback', mutationRateLimit, (req: Request, res: Response) => {
+  const { memoryId, outcome, reason, eventId } = req.body;
+
+  if (typeof memoryId !== 'string' || !memoryId.trim()) {
+    return res.status(400).json({ error: 'Field "memoryId" is required and must be a string.' });
   }
+
+  if (outcome !== 'success' && outcome !== 'failure') {
+    return res.status(400).json({ error: 'Field "outcome" must be "success" or "failure".' });
+  }
+
+  const cleanReason = typeof reason === 'string' ? reason.slice(0, 500) : undefined;
+  const cleanEventId = typeof eventId === 'string' ? eventId.slice(0, 100) : undefined;
+
   try {
-    const result = memoryStore.recordFeedback(memoryId, outcome, reason);
+    const result = memoryStore.recordFeedback(memoryId, outcome, cleanReason, cleanEventId);
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(400).json({ error: err.message || 'Feedback evaluation failed.' });
   }
 });
 
-// Reset memory bank to defaults for clean demo runs
-app.post('/api/reset', (req: Request, res: Response) => {
+// Protected Reset Endpoint (Disabled in production unless authorized)
+app.post('/api/reset', mutationRateLimit, (req: Request, res: Response) => {
+  const configuredToken = process.env.DEMO_RESET_TOKEN;
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction && !configuredToken) {
+    return res.status(403).json({
+      error: 'State reset is disabled in production. Set DEMO_RESET_TOKEN in environment to authorize.',
+    });
+  }
+
+  if (configuredToken) {
+    const providedToken = req.headers['x-reset-token'] || req.query.token;
+    if (providedToken !== configuredToken) {
+      return res.status(401).json({ error: 'Unauthorized: invalid or missing reset token.' });
+    }
+  }
+
   memoryStore.resetToDefaults();
-  res.json({ message: 'Memory bank reset to verified defaults' });
+  res.json({ message: 'Memory bank reset to verified defaults.' });
 });
 
 // Community Hotline AI Chat (Powered by Groq LLM + CivicShield MCP Immune Memory)
-app.post('/api/chat', async (req: Request, res: Response) => {
+app.post('/api/chat', mutationRateLimit, async (req: Request, res: Response) => {
   const { message } = req.body;
-  if (!message) {
-    return res.status(400).json({ error: 'Message is required' });
+  if (typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'Field "message" is required and must be a string.' });
   }
 
+  const query = message.trim().slice(0, 500);
+
   // 1. Query CivicShield MCP memory bank
-  const matches = memoryStore.retrieve(message);
+  const matches = memoryStore.retrieve(query);
   const groqKey = process.env.GROQ_API_KEY;
   const groqModel = process.env.GROQ_MODEL || 'qwen/qwen3.8-27b';
 
@@ -146,7 +221,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
                 role: 'system',
                 content: 'You are the CivicShield Public Safety Dispatcher. State in 1 direct, firm sentence that the requested advice is unverified or quarantined by CivicShield due to hazard. Direct the citizen to call 112 or BBMP 1533. Zero filler or apologies.'
               },
-              { role: 'user', content: message }
+              { role: 'user', content: query }
             ],
             max_tokens: 80,
             temperature: 0.1,
@@ -167,7 +242,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       toolCalls: [
         {
           tool: 'civic_retrieve',
-          query: message,
+          query,
           result: 'No verified high-trust memories found (> 0.35 threshold)',
           quarantinedBlockedCount: memoryStore.getAll().filter(m => m.isQuarantined).length,
         },
@@ -195,7 +270,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
               role: 'system',
               content: `You are the CivicShield Public Safety Dispatcher. State the exact verified protocol and official contact directly in 2 short sentences. No pleasantries, no conversational preamble, no repetition of the prompt. Rely strictly on: "${top.memory.solution}" from authority: "${top.memory.authority}".`
             },
-            { role: 'user', content: message }
+            { role: 'user', content: query }
           ],
           max_tokens: 120,
           temperature: 0.1,
@@ -221,7 +296,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     toolCalls: [
       {
         tool: 'civic_retrieve',
-        query: message,
+        query,
         matchedId: top.memory.id,
         trustScore: top.memory.trustScore,
         effectiveRank: top.effectiveScore,
