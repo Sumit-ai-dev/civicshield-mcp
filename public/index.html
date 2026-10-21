@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CivicShield | Protocol-Level Memory & Quarantine Engine</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/fonts/geist-sans/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.0/dist/fonts/geist-mono/style.css">
+  <!-- Markdown parser for rich markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    :root {
+      /* Curated Modern Glass Palette */
+      --canvas-bg: #f5f7fb;
+      --glass-panel: rgba(255, 255, 255, 0.75);
+      --glass-panel-subtle: rgba(255, 255, 255, 0.55);
+      --glass-card: rgba(255, 255, 255, 0.85);
+      --glass-border: rgba(255, 255, 255, 0.85);
+      --glass-border-subtle: rgba(226, 232, 240, 0.7);
+      
+      --text-main: #0f172a;
+      --text-body: #334155;
+      --text-muted: #64748b;
+      --text-light: #94a3b8;
+      
+      --brand-gradient: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%);
+      --brand-solid: #3b82f6;
+      --brand-glow: rgba(79, 70, 229, 0.15);
+      
+      --emerald-accent: #10b981;
+      --emerald-bg: rgba(16, 185, 129, 0.1);
+      --emerald-border: rgba(16, 185, 129, 0.25);
+      
+      --rose-accent: #f43f5e;
+      --rose-bg: rgba(244, 63, 94, 0.08);
+      --rose-border: rgba(244, 63, 94, 0.25);
+      
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-bubble: 20px;
+      --radius-pill: 9999px;
+      
+      --shadow-glass: 0 8px 32px 0 rgba(15, 23, 42, 0.05);
+      --shadow-bubble: 0 4px 16px 0 rgba(15, 23, 42, 0.04);
+      --shadow-brand: 0 4px 14px 0 rgba(79, 70, 229, 0.25);
+      --blur-strength: blur(20px) saturate(160%);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--canvas-bg);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.09) 0px, transparent 45%),
+        radial-gradient(at 100% 0%, rgba(56, 189, 248, 0.09) 0px, transparent 45%),
+        radial-gradient(at 50% 100%, rgba(16, 185, 129, 0.06) 0px, transparent 45%);
+      background-attachment: fixed;
+      color: var(--text-main);
+      font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 13.5px;
+      line-height: 1.5;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Top Glass Navbar */
+    .glass-nav {
+      height: 52px;
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: var(--blur-strength);
+      -webkit-backdrop-filter: var(--blur-strength);
+      border-bottom: 1px solid var(--glass-border);
+      padding: 0 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+    }
+
+    .brand-cluster {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-bubble {
+      width: 28px;
+      height: 28px;
+      background: var(--brand-gradient);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      box-shadow: var(--shadow-brand);
+    }
+
+    .brand-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text-main);
+    }
+
+    .pill-badge {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 500;
+      background: rgba(0, 0, 0, 0.04);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      color: var(--text-muted);
+      padding: 0.15rem 0.5rem;
+      border-radius: var(--radius-pill);
+    }
+
+    .nav-stats-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .runtime-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(255, 255, 255, 0.7);
+      border: 1px solid var(--glass-border-subtle);
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-body);
+      padding: 0.25rem 0.75rem;
+      border-radius: var(--radius-pill);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--emerald-accent);
+      box-shadow: 0 0 6px var(--emerald-accent);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(0.85); opacity: 0.5; }
+    }
+
+    .btn-glass-action {
+      font-family: inherit;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-body);
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid var(--glass-border-subtle);
+      padding: 0.3rem 0.75rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+    }
+
+    .btn-glass-action:hover {
+      background: #ffffff;
+      border-color: #cbd5e1;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    }
+
+    /* Main Container Shell */
+    .workspace-wrapper {
+      max-width: 1420px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.25rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      flex: 1;
+    }
+
+    /* Telemetry Metric Cards */
+    .metric-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+    }
+
+    .glass-kpi {
+      background: var(--glass-panel);
+      backdrop-filter: var(--blur-strength);
+      -webkit-backdrop-filter: var(--blur-strength);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
+      padding: 0.85rem 1.25rem;
+      box-shadow: var(--shadow-glass);
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      transition: transform 0.2s;
+    }
+
+    .glass-kpi:hover {
+      transform: translateY(-1px);
+    }
+
+    .kpi-titles {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+    }
+
+    .kpi-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .kpi-sub {
+      font-size: 0.72rem;
+      color: var(--text-light);
+    }
+
+    .kpi-digit {
+      font-family: 'Geist Mono', monospace;
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+    }
+
+    /* Dual Pane Grid */
+    .layout-duo {
+      display: grid;
+      grid-template-columns: 1fr 1.35fr;
+      gap: 1.25rem;
+      flex: 1;
+      align-items: stretch;
+    }
+
+    .frosted-box {
+      background: var(--glass-panel);
+      backdrop-filter: var(--blur-strength);
+      -webkit-backdrop-filter: var(--blur-strength);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-bubble);
+      box-shadow: var(--shadow-glass);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .box-header {
+      padding: 0.85rem 1.25rem;
+      border-bottom: 1px solid var(--glass-border-subtle);
+      background: rgba(255, 255, 255, 0.4);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .box-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .box-endpoint-label {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    /* Left Console: Chat & Bubbles */
+    .console-shell {
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      height: 100%;
+    }
+
+    .scenario-bubble-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+    }
+
+    .scenario-bubble {
+      font-family: inherit;
+      font-size: 0.74rem;
+      font-weight: 500;
+      color: var(--text-body);
+      background: rgba(255, 255, 255, 0.85);
+      border: 1px solid var(--glass-border-subtle);
+      padding: 0.35rem 0.85rem;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+    }
+
+    .scenario-bubble:hover {
+      background: #ffffff;
+      border-color: #94a3b8;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    }
+
+    .scenario-bubble.hazard-test {
+      color: var(--rose-accent);
+      background: var(--rose-bg);
+      border-color: var(--rose-border);
+    }
+
+    .scenario-bubble.hazard-test:hover {
+      background: rgba(244, 63, 94, 0.15);
+      border-color: var(--rose-accent);
+    }
+
+    .conversation-canvas {
+      flex: 1;
+      min-height: 400px;
+      max-height: 520px;
+      overflow-y: auto;
+      background: rgba(248, 250, 252, 0.6);
+      border: 1px solid var(--glass-border-subtle);
+      border-radius: var(--radius-md);
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    /* Message Bubbles */
+    .bubble-unit {
+      display: flex;
+      flex-direction: column;
+      max-width: 86%;
+    }
+
+    .bubble-unit.user-side {
+      align-self: flex-end;
+    }
+
+    .bubble-unit.agent-side {
+      align-self: flex-start;
+    }
+
+    .bubble-body {
+      padding: 0.9rem 1.15rem;
+      font-size: 0.86rem;
+      line-height: 1.5;
+    }
+
+    .user-bubble {
+      background: var(--brand-gradient);
+      color: #ffffff;
+      border-radius: 20px 20px 4px 20px;
+      box-shadow: var(--shadow-brand);
+    }
+
+    .agent-bubble {
+      background: rgba(255, 255, 255, 0.95);
+      border: 1px solid var(--glass-border);
+      border-radius: 20px 20px 20px 4px;
+      color: var(--text-body);
+      box-shadow: var(--shadow-bubble);
+    }
+
+    /* Rendered Markdown Styling */
+    .agent-bubble p {
+      margin-bottom: 0.5rem;
+    }
+    .agent-bubble p:last-child {
+      margin-bottom: 0;
+    }
+    .agent-bubble strong {
+      color: var(--text-main);
+      font-weight: 600;
+    }
+    .agent-bubble ul, .agent-bubble ol {
+      margin-left: 1.25rem;
+      margin-bottom: 0.5rem;
+    }
+    .agent-bubble li {
+      margin-bottom: 0.25rem;
+    }
+
+    .bubble-meta-strip {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid rgba(226, 232, 240, 0.6);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .badge-verified-tag {
+      background: var(--emerald-bg);
+      color: var(--emerald-accent);
+      border: 1px solid var(--emerald-border);
+      font-size: 0.68rem;
+      font-weight: 600;
+      padding: 0.1rem 0.45rem;
+      border-radius: var(--radius-pill);
+      display: flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .payload-toggle {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--brand-solid);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      margin-left: auto;
+      text-decoration: underline;
+    }
+
+    .payload-drawer {
+      display: none;
+      margin-top: 0.5rem;
+      background: #0f172a;
+      color: #94a3b8;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      padding: 0.65rem 0.85rem;
+      border-radius: var(--radius-sm);
+      overflow-x: auto;
+    }
+
+    .input-bubble-dock {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .bubble-input {
+      flex: 1;
+      height: 42px;
+      font-family: inherit;
+      font-size: 0.86rem;
+      padding: 0 1.15rem;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--glass-border-subtle);
+      border-radius: var(--radius-pill);
+      outline: none;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.02);
+    }
+
+    .bubble-input:focus {
+      background: #ffffff;
+      border-color: #6366f1;
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+    }
+
+    .btn-send-bubble {
+      height: 42px;
+      padding: 0 1.25rem;
+      background: var(--brand-gradient);
+      color: #ffffff;
+      border: none;
+      border-radius: var(--radius-pill);
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: var(--shadow-brand);
+    }
+
+    .btn-send-bubble:hover {
+      opacity: 0.95;
+      transform: translateY(-1px);
+    }
+
+    /* Right: Memory Registry */
+    .registry-wrapper {
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+    }
+
+    .search-filter-bubble {
+      height: 36px;
+      width: 100%;
+      font-family: inherit;
+      font-size: 0.78rem;
+      padding: 0 1rem;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--glass-border-subtle);
+      border-radius: var(--radius-pill);
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-filter-bubble:focus {
+      border-color: var(--brand-solid);
+      background: #ffffff;
+    }
+
+    .memory-card-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 440px;
+      overflow-y: auto;
+      padding-right: 0.35rem;
+    }
+
+    .glass-memory-card {
+      background: var(--glass-card);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 1rem 1.15rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.45rem;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.03);
+    }
+
+    .glass-memory-card:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.05);
+    }
+
+    .glass-memory-card.quarantined-state {
+      background: rgba(254, 242, 242, 0.9);
+      border-color: var(--rose-border);
+      box-shadow: 0 4px 16px rgba(244, 63, 94, 0.1);
+    }
+
+    .card-meta-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .pill-category {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #4f46e5;
+      background: rgba(99, 102, 241, 0.1);
+      padding: 0.15rem 0.55rem;
+      border-radius: var(--radius-pill);
+    }
+
+    .tag-quarantine-active {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: #ffffff;
+      background: var(--rose-accent);
+      padding: 0.2rem 0.55rem;
+      border-radius: var(--radius-pill);
+      letter-spacing: 0.03em;
+    }
+
+    .memory-heading {
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .memory-guidance {
+      font-size: 0.82rem;
+      color: var(--text-body);
+      background: rgba(248, 250, 252, 0.7);
+      padding: 0.65rem 0.85rem;
+      border-radius: var(--radius-sm);
+      line-height: 1.45;
+    }
+
+    .glass-memory-card.quarantined-state .memory-guidance {
+      text-decoration: line-through;
+      color: var(--rose-accent);
+      background: rgba(254, 226, 226, 0.4);
+    }
+
+    .gauge-container {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.25rem;
+    }
+
+    .gauge-track {
+      flex: 1;
+      height: 6px;
+      background: #e2e8f0;
+      border-radius: var(--radius-pill);
+      overflow: hidden;
+    }
+
+    .gauge-fill {
+      height: 100%;
+      border-radius: var(--radius-pill);
+      transition: width 0.4s ease, background-color 0.4s ease;
+    }
+
+    .gauge-number {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      width: 40px;
+      text-align: right;
+    }
+
+    .action-bubble-group {
+      display: flex;
+      gap: 0.45rem;
+      margin-top: 0.35rem;
+    }
+
+    .btn-action-bubble {
+      flex: 1;
+      height: 28px;
+      font-family: inherit;
+      font-size: 0.74rem;
+      font-weight: 500;
+      color: var(--text-body);
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid var(--glass-border-subtle);
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      transition: all 0.15s ease;
+    }
+
+    .btn-action-bubble:hover {
+      background: #ffffff;
+      border-color: #cbd5e1;
+      transform: translateY(-1px);
+    }
+
+    .btn-action-bubble.btn-hazard:hover {
+      color: var(--rose-accent);
+      background: var(--rose-bg);
+      border-color: var(--rose-border);
+    }
+
+    /* WAL Audit Drawer */
+    .wal-drawer-card {
+      border-top: 1px solid var(--glass-border-subtle);
+      background: #0f172a;
+      color: #94a3b8;
+      padding: 0.85rem 1.25rem;
+    }
+
+    .wal-header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.45rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .wal-scroll {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      max-height: 110px;
+      overflow-y: auto;
+    }
+
+    .wal-item {
+      display: flex;
+      gap: 0.65rem;
+      color: #94a3b8;
+      line-height: 1.4;
+    }
+
+    .wal-item.quarantine-highlight {
+      color: #f87171;
+      font-weight: 600;
+    }
+
+    .wal-item .timestamp {
+      color: #64748b;
+    }
+
+    .wal-item .action-tag {
+      color: #38bdf8;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Glassmorphism Navigation -->
+  <header class="glass-nav">
+    <div class="brand-cluster">
+      <div class="logo-bubble">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+      </div>
+      <span class="brand-title">CivicShield Protocol</span>
+      <span class="pill-badge">MCP v1.0</span>
+    </div>
+
+    <div class="nav-stats-group">
+      <div class="runtime-pill">
+        <div class="pulse-dot"></div>
+        <span>SpringWinter AWS (Port 8000)</span>
+      </div>
+      <button class="btn-glass-action" onclick="resetMemoryBank()">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M21 2v6h-6M3 12a9 9 0 0 1 15-6.7L21 8M3 22v-6h6M21 12a9 9 0 0 1-15 6.7L3 16"/>
+        </svg>
+        Reset State
+      </button>
+    </div>
+  </header>
+
+  <main class="workspace-wrapper">
+
+    <!-- KPI Metric Cards -->
+    <section class="metric-row">
+      <div class="glass-kpi">
+        <div class="kpi-titles">
+          <span class="kpi-label">Mean Trust Score</span>
+          <span class="kpi-sub">A-EMA Protocol</span>
+        </div>
+        <span class="kpi-digit" id="statAvgTrust" style="color: var(--emerald-accent);">95%</span>
+      </div>
+
+      <div class="glass-kpi">
+        <div class="kpi-titles">
+          <span class="kpi-label">Active Protocols</span>
+          <span class="kpi-sub">Verified Safe Store</span>
+        </div>
+        <span class="kpi-digit" id="statActiveCount">5</span>
+      </div>
+
+      <div class="glass-kpi">
+        <div class="kpi-titles">
+          <span class="kpi-label">Theorem 1 Cutoff</span>
+          <span class="kpi-sub">Quarantined Records</span>
+        </div>
+        <span class="kpi-digit" id="statQuarantined" style="color: var(--rose-accent);">0</span>
+      </div>
+
+      <div class="glass-kpi">
+        <div class="kpi-titles">
+          <span class="kpi-label">Negative Transfer Risk</span>
+          <span class="kpi-sub">Vulnerability Rate</span>
+        </div>
+        <span class="kpi-digit" id="statRiskScore" style="color: var(--brand-solid);">0.0%</span>
+      </div>
+    </section>
+
+    <!-- Main Workspace Duo -->
+    <div class="layout-duo">
+
+      <!-- Left: Protocol Client Console -->
+      <section class="frosted-box">
+        <div class="box-header">
+          <div class="box-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="4 17 10 11 4 5"/>
+              <line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            Community AI Client Console
+          </div>
+          <span class="box-endpoint-label">TRANSPORT: SSE / HTTP</span>
+        </div>
+
+        <div class="console-shell">
+          <div class="scenario-bubble-row">
+            <button class="scenario-bubble" onclick="sendPrompt('Is drinking water in Ward 4 Koramangala safe?')">Drinking Water (Ward 4)</button>
+            <button class="scenario-bubble" onclick="sendPrompt('What is the protocol for snapped live wires?')">Snapped Live Wire Hazard</button>
+            <button class="scenario-bubble" onclick="sendPrompt('Safe transit routes during urban flash flood')">Flash Flood Routes</button>
+            <button class="scenario-bubble hazard-test" onclick="sendPrompt('Can I add kerosene to drinking water to kill mosquito larvae?')">Test Hazardous Rumor</button>
+          </div>
+
+          <div class="conversation-canvas" id="chatHistory">
+            <div class="bubble-unit agent-side">
+              <div class="bubble-body agent-bubble">
+                <p><strong>CivicShield Client Connected.</strong> All community guidance is dynamically screened against the Theorem 1 Quarantine threshold (&theta; = 0.35) to prevent negative transfer.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="input-bubble-dock">
+            <input type="text" id="userInput" class="bubble-input" placeholder="Query civic emergency, medical triage, or public safety..." onkeydown="if(event.key==='Enter') sendUserMessage()">
+            <button class="btn-send-bubble" onclick="sendUserMessage()">Send</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Memory Registry & Quarantine Vault -->
+      <section class="frosted-box">
+        <div class="box-header">
+          <div class="box-title">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            Experiential Memory Registry
+          </div>
+          <span class="box-endpoint-label">&beta; = 0.70 | &theta; = 0.35</span>
+        </div>
+
+        <div class="registry-wrapper">
+          <input type="text" id="filterInput" class="search-filter-bubble" placeholder="Filter protocols by locality, keyword, or ID..." oninput="filterCards()">
+
+          <div class="memory-card-feed" id="cardStream">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Write-Ahead Log Drawer -->
+        <div class="wal-drawer-card">
+          <div class="wal-header-row">
+            <span>Write-Ahead Log (WAL) Audit Stream</span>
+            <span>Append-Only Forensic Trail</span>
+          </div>
+          <div class="wal-scroll" id="walFeed">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+  </main>
+
+  <script>
+    let cachedMemories = [];
+
+    async function loadTelemetry() {
+      try {
+        const [memRes, auditRes, walRes] = await Promise.all([
+          fetch('/api/memories'),
+          fetch('/api/audit'),
+          fetch('/api/wal')
+        ]);
+        cachedMemories = await memRes.json();
+        const audit = await auditRes.json();
+        const walEntries = await walRes.json();
+
+        updateKPIs(audit);
+        renderCards(cachedMemories);
+        renderWAL(walEntries);
+      } catch (err) {
+        console.error('Telemetry error:', err);
+      }
+    }
+
+    function updateKPIs(audit) {
+      document.getElementById('statAvgTrust').innerText = Math.round(audit.averageTrustScore * 100) + '%';
+      document.getElementById('statActiveCount').innerText = audit.activeCount;
+      document.getElementById('statQuarantined').innerText = audit.quarantinedCount;
+      document.getElementById('statRiskScore').innerText = (audit.negativeTransferRiskScore * 100).toFixed(1) + '%';
+    }
+
+    function renderCards(list) {
+      const container = document.getElementById('cardStream');
+      container.innerHTML = list.map(m => {
+        const pct = Math.round(m.trustScore * 100);
+        let color = 'var(--emerald-accent)';
+        if (m.isQuarantined || m.trustScore < 0.35) color = 'var(--rose-accent)';
+        else if (m.trustScore < 0.70) color = '#f59e0b';
+
+        return `
+          <div class="glass-memory-card ${m.isQuarantined ? 'quarantined-state' : ''}">
+            <div class="card-meta-header">
+              <span class="pill-category">${m.category}</span>
+              ${m.isQuarantined ? '<span class="tag-quarantine-active">QUARANTINED (THEOREM 1)</span>' : '<span style="font-family: \'Geist Mono\', monospace; font-size: 0.7rem; color: var(--text-light);">' + m.id + '</span>'}
+            </div>
+            <div class="memory-heading">${m.task}</div>
+            <div class="memory-guidance">${m.solution}</div>
+            <div class="gauge-container">
+              <div class="gauge-track">
+                <div class="gauge-fill" style="width: ${pct}%; background-color: ${color};"></div>
+              </div>
+              <span class="gauge-number" style="color: ${color};">${pct}%</span>
+            </div>
+            <div class="action-bubble-group">
+              <button class="btn-action-bubble" onclick="recordFeedback('${m.id}', 'success')">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                Verify Success
+              </button>
+              <button class="btn-action-bubble btn-hazard" onclick="recordFeedback('${m.id}', 'failure')">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                Flag Incident / Failure
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function filterCards() {
+      const query = document.getElementById('filterInput').value.toLowerCase();
+      const filtered = cachedMemories.filter(m => 
+        m.task.toLowerCase().includes(query) || 
+        m.solution.toLowerCase().includes(query) || 
+        m.id.toLowerCase().includes(query)
+      );
+      renderCards(filtered);
+    }
+
+    function renderWAL(records) {
+      const feed = document.getElementById('walFeed');
+      feed.innerHTML = records.map(r => {
+        const time = r.timestamp.slice(11, 19);
+        const isAlert = r.quarantined;
+        return `
+          <div class="wal-item ${isAlert ? 'quarantine-highlight' : ''}">
+            <span class="timestamp">[${time}]</span>
+            <span class="action-tag">${r.eventType}</span>
+            <span>Target=${r.memoryId}</span>
+            <span>${r.reason || ''}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function recordFeedback(memoryId, outcome) {
+      try {
+        await fetch('/api/feedback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ memoryId, outcome, reason: 'Feedback submitted from registry control' })
+        });
+        await loadTelemetry();
+      } catch (err) {
+        alert('Feedback error: ' + err.message);
+      }
+    }
+
+    async function resetMemoryBank() {
+      await fetch('/api/reset', { method: 'POST' });
+      await loadTelemetry();
+    }
+
+    function sendPrompt(text) {
+      document.getElementById('userInput').value = text;
+      sendUserMessage();
+    }
+
+    async function sendUserMessage() {
+      const input = document.getElementById('userInput');
+      const query = input.value.trim();
+      if (!query) return;
+
+      const history = document.getElementById('chatHistory');
+      
+      // Render User Bubble
+      history.innerHTML += `
+        <div class="bubble-unit user-side">
+          <div class="bubble-body user-bubble">${escapeHtml(query)}</div>
+        </div>
+      `;
+      input.value = '';
+      history.scrollTop = history.scrollHeight;
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: query })
+        });
+        const data = await res.json();
+        const uniqueId = 'payload_' + Date.now();
+
+        // Render Markdown cleanly using marked
+        const parsedHtml = marked.parse(data.agentResponse);
+
+        let metaHtml = '';
+        if (data.authority) {
+          metaHtml = `
+            <div class="bubble-meta-strip">
+              <span class="badge-verified-tag">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+                Verified Source: ${data.authority} (${Math.round((data.trustScore || 0.95) * 100)}% Trust)
+              </span>
+              <button class="payload-toggle" onclick="togglePayload('${uniqueId}')">Inspect Protocol Payload</button>
+            </div>
+          `;
+        }
+
+        history.innerHTML += `
+          <div class="bubble-unit agent-side">
+            <div class="bubble-body agent-bubble">
+              ${parsedHtml}
+              ${metaHtml}
+              <div class="payload-drawer" id="${uniqueId}">
+                MCP Tool Call: ${JSON.stringify(data.toolCalls[0], null, 2)}
+              </div>
+            </div>
+          </div>
+        `;
+        history.scrollTop = history.scrollHeight;
+        await loadTelemetry();
+      } catch (err) {
+        history.innerHTML += `
+          <div class="bubble-unit agent-side">
+            <div class="bubble-body agent-bubble" style="color:var(--rose-accent);">
+              Error: ${err.message}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function togglePayload(id) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.style.display = el.style.display === 'block' ? 'none' : 'block';
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.innerText = text;
+      return div.innerHTML;
+    }
+
+    loadTelemetry();
+    setInterval(loadTelemetry, 3000);
+  </script>
+</body>
+</html>
